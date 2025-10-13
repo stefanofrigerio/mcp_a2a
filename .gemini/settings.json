@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "weather": {
+      "command": "poetry",
+      "args": [
+        "run",
+        "python",
+        "src/server/mcp_weather.py"
+      ],
+      "cwd": "/Users/frigeri2/projects/mcp_a2a"
+    }
+  }
+}
