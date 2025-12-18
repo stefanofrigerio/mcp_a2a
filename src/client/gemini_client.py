@@ -30,8 +30,8 @@ class GeminiClient:
         import google.auth
         credentials, project = google.auth.default()
         
-        # Configura genai con le credenziali (senza reset)
-        genai.configure(credentials=credentials)
+        # Configura genai senza specificare credentials (usa ADC automaticamente)
+        genai.configure()
         self.gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
         logger.info(f"✅ Gemini configurato con autenticazione gcloud (progetto: {project})")
         
@@ -50,74 +50,118 @@ class GeminiClient:
         
     def initialize_mcp(self):
         """Inizializza la comunicazione MCP"""
-        # Messaggio di inizializzazione
-        init_msg = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "gemini-client", "version": "1.0"}
+        try:
+            # Messaggio di inizializzazione
+            init_msg = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "gemini-client", "version": "1.0"}
+                }
             }
-        }
-        
-        self.mcp_process.stdin.write(json.dumps(init_msg) + "\n")
-        self.mcp_process.stdin.flush()
-        
-        # Leggi risposta
-        response = self.mcp_process.stdout.readline()
-        logger.info("✅ MCP inizializzato")
-        
-        # Messaggio di notifica initialized
-        initialized_msg = {
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized"
-        }
-        
-        self.mcp_process.stdin.write(json.dumps(initialized_msg) + "\n")
-        self.mcp_process.stdin.flush()
-        
-        # Richiedi lista tool
-        list_tools_msg = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/list",
-            "params": {}
-        }
-        
-        self.mcp_process.stdin.write(json.dumps(list_tools_msg) + "\n")
-        self.mcp_process.stdin.flush()
-        
-        # Leggi risposta
-        response = self.mcp_process.stdout.readline()
-        tools_data = json.loads(response)
-        self.available_tools = tools_data["result"]["tools"]
-        logger.info(f"✅ {len(self.available_tools)} tool disponibili")
+            
+            self.mcp_process.stdin.write(json.dumps(init_msg) + "\n")
+            self.mcp_process.stdin.flush()
+            
+            # Leggi risposta con timeout
+            import select
+            import time
+            time.sleep(0.2)  # Piccola pausa per permettere al server di rispondere
+            ready, _, _ = select.select([self.mcp_process.stdout], [], [], 5.0)
+            if ready:
+                response = self.mcp_process.stdout.readline()
+                logger.info("✅ MCP inizializzato")
+                
+                # Messaggio di notifica initialized
+                initialized_msg = {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized"
+                }
+                
+                self.mcp_process.stdin.write(json.dumps(initialized_msg) + "\n")
+                self.mcp_process.stdin.flush()
+                
+                # Piccola pausa prima di richiedere la lista tool
+                time.sleep(0.2)
+                
+                # Richiedi lista tool
+                list_tools_msg = {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/list",
+                    "params": {}
+                }
+                
+                self.mcp_process.stdin.write(json.dumps(list_tools_msg) + "\n")
+                self.mcp_process.stdin.flush()
+                
+                # Leggi risposta con timeout
+                time.sleep(0.2)
+                ready, _, _ = select.select([self.mcp_process.stdout], [], [], 5.0)
+                if ready:
+                    response = self.mcp_process.stdout.readline()
+                    tools_data = json.loads(response)
+                    if "result" in tools_data and "tools" in tools_data["result"]:
+                        self.available_tools = tools_data["result"]["tools"]
+                        logger.info(f"✅ {len(self.available_tools)} tool disponibili")
+                    else:
+                        logger.warning(f"Risposta inattesa: {response}")
+                        self.available_tools = []
+                else:
+                    logger.error("Timeout nella lettura della lista tool")
+                    self.available_tools = []
+            else:
+                logger.error("Timeout nell'inizializzazione MCP")
+                self.available_tools = []
+                
+        except Exception as e:
+            logger.error(f"Errore nell'inizializzazione MCP: {e}")
+            self.available_tools = []
         
     def call_mcp_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         """Chiama un tool MCP"""
-        call_tool_msg = {
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": arguments
+        try:
+            import select
+            import time
+            
+            call_tool_msg = {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": arguments
+                }
             }
-        }
-        
-        self.mcp_process.stdin.write(json.dumps(call_tool_msg) + "\n")
-        self.mcp_process.stdin.flush()
-        
-        # Leggi risposta
-        response = self.mcp_process.stdout.readline()
-        result_data = json.loads(response)
-        
-        if "result" in result_data and "content" in result_data["result"]:
-            return result_data["result"]["content"][0]["text"]
-        else:
-            return "Errore nella chiamata del tool"
+            
+            self.mcp_process.stdin.write(json.dumps(call_tool_msg) + "\n")
+            self.mcp_process.stdin.flush()
+            
+            # Aspetta e leggi risposta con timeout
+            time.sleep(0.2)
+            ready, _, _ = select.select([self.mcp_process.stdout], [], [], 30.0)
+            if ready:
+                response = self.mcp_process.stdout.readline()
+                result_data = json.loads(response)
+                
+                if "result" in result_data and "content" in result_data["result"]:
+                    return result_data["result"]["content"][0]["text"]
+                elif "error" in result_data:
+                    error_msg = result_data["error"].get("message", "Errore sconosciuto")
+                    logger.error(f"Errore tool MCP: {error_msg}")
+                    return f"Errore: {error_msg}"
+                else:
+                    logger.warning(f"Risposta inattesa dal tool: {response}")
+                    return "Errore: risposta inattesa dal tool"
+            else:
+                logger.error("Timeout nella chiamata tool")
+                return "Errore: timeout nella chiamata tool"
+        except Exception as e:
+            logger.error(f"Errore nella chiamata tool {tool_name}: {e}")
+            return f"Errore: {str(e)}"
             
     def create_gemini_prompt_with_tools(self, user_prompt: str) -> str:
         """Crea un prompt per Gemini che include i tool MCP disponibili"""
@@ -131,41 +175,90 @@ class GeminiClient:
 Tool disponibili:
 {tools_description}
 
-Quando l'utente chiede informazioni sul tempo, usa i tool appropriati:
-- Per previsioni: usa get_forecast con latitudine e longitudine
-- Per avvisi meteorologici: usa get_alerts con il codice dello stato USA
+Quando l'utente chiede informazioni sul tempo, usa i tool appropriati in questo ordine:
+1. Se l'utente menziona una città senza coordinate, usa prima get_coordinates per ottenere latitudine e longitudine
+2. Usa get_forecast con le coordinate per ottenere le previsioni
+3. Per avvisi meteorologici negli USA: usa get_alerts con il codice dello stato USA
 
-Rispondi in italiano e fornisci informazioni dettagliate e utili.
+Esempio di workflow:
+- Utente: "Che tempo fa a Roma?"
+  1. Chiama get_coordinates("Roma") per ottenere le coordinate
+  2. Chiama get_forecast con le coordinate ottenute
+  3. Fornisci una risposta completa e dettagliata
+
+Rispondi sempre in italiano e fornisci informazioni dettagliate e utili.
 
 Prompt utente: {user_prompt}"""
         
         return system_prompt
         
+    def extract_city_name(self, text: str) -> str | None:
+        """Estrae il nome di una città dal testo"""
+        # Cerca pattern comuni per città
+        import re
+        # Pattern per "a Roma", "a Milano", "a New York", etc.
+        patterns = [
+            r"a\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            r"per\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            r"in\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1)
+        return None
+    
     def chat_with_tools(self, user_prompt: str) -> str:
         """Chat con Gemini usando i tool MCP"""
         if not self.gemini_model:
             raise ValueError("Gemini non configurato")
-            
-        # Crea il prompt con i tool
-        prompt = self.create_gemini_prompt_with_tools(user_prompt)
+        
+        # Prima, controlla se serve chiamare get_coordinates
+        city = self.extract_city_name(user_prompt)
+        coordinates = None
+        coords_result = None
+        
+        if city:
+            logger.info(f"Città rilevata: {city}")
+            try:
+                # Ottieni le coordinate della città
+                coords_result = self.call_mcp_tool("get_coordinates", {"city": city})
+                logger.info(f"Coordinate ottenute: {coords_result}")
+                
+                # Estrai latitudine e longitudine dal risultato
+                import re
+                lat_match = re.search(r"Latitudine:\s*([\d.]+)", coords_result)
+                lon_match = re.search(r"Longitudine:\s*([\d.-]+)", coords_result)
+                
+                if lat_match and lon_match:
+                    coordinates = {
+                        "latitude": float(lat_match.group(1)),
+                        "longitude": float(lon_match.group(1))
+                    }
+                    logger.info(f"Coordinate estratte: lat={coordinates['latitude']}, lon={coordinates['longitude']}")
+            except Exception as e:
+                logger.error(f"Errore nel recupero coordinate: {e}")
+        
+        # Se abbiamo le coordinate, ottieni le previsioni
+        if coordinates and ("tempo" in user_prompt.lower() or "prevision" in user_prompt.lower()):
+            try:
+                logger.info(f"Chiamata get_forecast con coordinate: {coordinates}")
+                forecast = self.call_mcp_tool("get_forecast", coordinates)
+                logger.info(f"Previsioni ottenute: {forecast[:200]}...")
+                # Crea un prompt con le informazioni ottenute
+                enhanced_prompt = f"{user_prompt}\n\nHo già ottenuto le seguenti informazioni:\n\n{coords_result}\n\n{forecast}\n\nFornisci una risposta completa e dettagliata in italiano."
+            except Exception as e:
+                logger.error(f"Errore nel recupero previsioni: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                enhanced_prompt = f"{user_prompt}\n\nHo ottenuto le coordinate: {coords_result}\n\nMa non sono riuscito a ottenere le previsioni meteo. Potresti spiegare all'utente che le previsioni meteo sono disponibili solo per gli Stati Uniti d'America, e suggerire fonti alternative per città fuori dagli USA."
+        else:
+            # Usa il prompt normale con i tool
+            enhanced_prompt = self.create_gemini_prompt_with_tools(user_prompt)
         
         # Genera risposta con Gemini
-        response = self.gemini_model.generate_content(prompt)
-        
-        # Analizza la risposta per vedere se dobbiamo chiamare tool
-        response_text = response.text
-        
-        # Controlla se la risposta indica che servono coordinate
-        if "coordinate" in response_text.lower() or "latitudine" in response_text.lower():
-            # Prova a estrarre coordinate dal prompt o usa coordinate di default
-            if "san francisco" in user_prompt.lower():
-                forecast = self.call_mcp_tool("get_forecast", {
-                    "latitude": 37.7749,
-                    "longitude": -122.4194
-                })
-                return f"{response_text}\n\n{forecast}"
-                
-        return response_text
+        response = self.gemini_model.generate_content(enhanced_prompt)
+        return response.text
         
     def close(self):
         """Chiudi le connessioni"""

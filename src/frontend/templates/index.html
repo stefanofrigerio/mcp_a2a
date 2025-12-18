@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weather Assistant - Gemini + MCP</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 700px;
+            width: 100%;
+            animation: slideIn 0.5s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+            text-align: center;
+            font-size: 2em;
+            font-weight: 700;
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 10px;
+            color: #555;
+            font-weight: 600;
+            font-size: 1.1em;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .response {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .response h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+
+        .response p {
+            color: #555;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+
+        .error {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fee;
+            border-radius: 10px;
+            border-left: 4px solid #e74c3c;
+            color: #c0392b;
+        }
+
+        .city-name {
+            color: #667eea;
+            font-weight: 700;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 30px;
+            margin-top: 20px;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .loader {
+            display: inline-block;
+            width: 50px;
+            height: 50px;
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hourglass {
+            display: inline-block;
+            font-size: 3em;
+            animation: flip 2s ease-in-out infinite;
+        }
+
+        @keyframes flip {
+            0%, 100% { transform: rotate(0deg); }
+            50% { transform: rotate(180deg); }
+        }
+
+        .loading-text {
+            margin-top: 15px;
+            color: #667eea;
+            font-size: 1.1em;
+            font-weight: 600;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 25px;
+            }
+
+            h1 {
+                font-size: 1.5em;
+            }
+        }
+    </style>
+    <script>
+        function showLoading() {
+            // Mostra il loader
+            document.getElementById('loading').classList.add('active');
+            // Disabilita il bottone
+            document.querySelector('button[type="submit"]').disabled = true;
+            // Nascondi eventuali risposte precedenti
+            const response = document.querySelector('.response');
+            if (response) {
+                response.style.opacity = '0.3';
+            }
+        }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>🌤️ Weather Assistant</h1>
+        <p style="text-align: center; color: #777; margin-bottom: 30px;">
+            Powered by Gemini + MCP
+        </p>
+
+        <form method="post" action="/ask" onsubmit="showLoading()">
+            <div class="form-group">
+                <label for="city">Choose the city:</label>
+                <input 
+                    type="text" 
+                    id="city" 
+                    name="city" 
+                    placeholder="e.g., Roma, Milano, New York, San Francisco..."
+                    value="{{ city if city else '' }}"
+                    required
+                    autofocus
+                >
+            </div>
+            
+            <div class="form-group">
+                <label>Tipo di domanda:</label>
+                <div style="display: flex; gap: 15px; margin-top: 10px;">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="radio" name="question_type" value="weather" checked style="margin-right: 8px;">
+                        <span>🌤️ Solo meteo</span>
+                    </label>
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="radio" name="question_type" value="outdoor" style="margin-right: 8px;">
+                        <span>🏗️ Lavori outdoor</span>
+                    </label>
+                </div>
+            </div>
+            
+            <button type="submit">🔍 Get Answer</button>
+        </form>
+
+        <div id="loading" class="loading">
+            <div class="hourglass">⏳</div>
+            <div class="loader"></div>
+            <div class="loading-text">Attendere prego, sto consultando Gemini...</div>
+        </div>
+
+        {% if error %}
+        <div class="error">
+            <strong>❌ Errore:</strong> {{ error }}
+        </div>
+        {% endif %}
+
+        {% if response %}
+        <div class="response">
+            <h2>
+                {% if city %}
+                Previsioni per <span class="city-name">{{ city }}</span>
+                {% else %}
+                Risposta
+                {% endif %}
+            </h2>
+            <p>{{ response }}</p>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+

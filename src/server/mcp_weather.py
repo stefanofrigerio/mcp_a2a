@@ -2,6 +2,7 @@ from typing import Any, Sequence
 import httpx
 import logging
 import asyncio
+import sys
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -15,6 +16,7 @@ server = Server("weather")
 
 # Constants
 NWS_API_BASE = "https://api.weather.gov"
+NOMINATIM_API_BASE = "https://nominatim.openstreetmap.org"
 USER_AGENT = "weather-app/1.0"
 
 async def make_nws_request(url: str) -> dict[str, Any] | None:
@@ -23,12 +25,37 @@ async def make_nws_request(url: str) -> dict[str, Any] | None:
         "User-Agent": USER_AGENT,
         "Accept": "application/geo+json"
     }
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(follow_redirects=True) as client:
         try:
             response = await client.get(url, headers=headers, timeout=30.0)
             response.raise_for_status()
             return response.json()
-        except Exception:
+        except Exception as e:
+            logger.error(f"Errore nella richiesta NWS a {url}: {e}")
+            return None
+
+async def geocode_city(city_name: str) -> dict[str, Any] | None:
+    """Trova le coordinate geografiche di una città usando Nominatim."""
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json"
+    }
+    url = f"{NOMINATIM_API_BASE}/search"
+    params = {
+        "q": city_name,
+        "format": "json",
+        "limit": 1
+    }
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, headers=headers, params=params, timeout=30.0)
+            response.raise_for_status()
+            data = response.json()
+            if data and len(data) > 0:
+                return data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Errore nella geocodifica: {e}")
             return None
 
 def format_alert(feature: dict) -> str:
@@ -47,6 +74,20 @@ async def list_tools() -> list[Tool]:
     """List available tools."""
     logger.info("📋 Lista tool richiesta")
     tools = [
+        Tool(
+            name="get_coordinates",
+            description="Trova le coordinate geografiche (latitudine e longitudine) di una città",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "Nome della città (es. Roma, Milano, New York, San Francisco)"
+                    }
+                },
+                "required": ["city"]
+            }
+        ),
         Tool(
             name="get_alerts",
             description="Get weather alerts for a US state",
@@ -88,7 +129,33 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
     """Handle tool calls."""
     logger.info(f"Chiamata tool: {name} con argomenti: {arguments}")
     
-    if name == "get_alerts":
+    if name == "get_coordinates":
+        city = arguments.get("city")
+        if not city:
+            return [TextContent(type="text", text="Errore: nome città richiesto")]
+        
+        try:
+            logger.info(f"Geocodifica città: {city}")
+            result = await geocode_city(city)
+            
+            if not result:
+                return [TextContent(type="text", text=f"Città '{city}' non trovata.")]
+            
+            latitude = float(result.get("lat", 0))
+            longitude = float(result.get("lon", 0))
+            display_name = result.get("display_name", city)
+            
+            result_text = f"""Città: {display_name}
+Latitudine: {latitude}
+Longitudine: {longitude}"""
+            
+            logger.info(f"Coordinate trovate per {city}: lat={latitude}, lon={longitude}")
+            return [TextContent(type="text", text=result_text)]
+        except Exception as e:
+            logger.error(f"Errore in get_coordinates: {e}")
+            return [TextContent(type="text", text=f"Errore: {str(e)}")]
+    
+    elif name == "get_alerts":
         state = arguments.get("state")
         if not state:
             return [TextContent(type="text", text="Errore: stato richiesto")]
@@ -125,6 +192,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
             return [TextContent(type="text", text="Errore: latitudine e longitudine richieste")]
         
         try:
+            # Arrotonda le coordinate a 4 decimali per l'API NWS
+            latitude = round(float(latitude), 4)
+            longitude = round(float(longitude), 4)
+            
             logger.info(f"Chiamata get_forecast per lat: {latitude}, lon: {longitude}")
             
             # First get the forecast grid endpoint
@@ -134,7 +205,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> Sequence[TextConten
 
             if not points_data:
                 logger.error("Impossibile ottenere dati punti")
-                return [TextContent(type="text", text="Unable to fetch forecast data for this location.")]
+                return [TextContent(type="text", text="Unable to fetch forecast data for this location. The National Weather Service API only provides forecasts for locations within the United States.")]
 
             # Get the forecast URL from the points response
             forecast_url = points_data["properties"]["forecast"]
@@ -180,12 +251,16 @@ async def main():
             init_options = server.create_initialization_options()
             logger.info("✅ Opzioni create")
             logger.info("🚀 Avvio server.run...")
+            
+            # Il server rimane attivo e in ascolto
             await server.run(
                 read_stream,
                 write_stream,
                 init_options
             )
-            logger.info("✅ Server.run completato")
+            logger.info("✅ Server.run completato - server terminato")
+    except KeyboardInterrupt:
+        logger.info("🛑 Server interrotto dall'utente")
     except Exception as e:
         logger.error(f"❌ Errore in main: {e}")
         import traceback
